@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IGNOSIS AI · Document Intelligence Engine</title>
+<link href="https://fonts.googleapis.com/css2?family=Geometric+Sans-Serif:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F9FAFB;
+    --surface: #FFFFFF;
+    --border: #E5E7EB;
+    --accent: #0056D2; 
+    --accent-glow: rgba(0, 86, 210, 0.2);
+    --text: #111827;
+    --text-muted: #6B7280;
+    --tag-bg: #F3F4F6;
+    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+    --shadow-hover: 0 10px 25px -5px rgba(0, 86, 210, 0.1), 0 8px 10px -6px rgba(0, 86, 210, 0.1);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Geometric Sans-Serif', sans-serif;
+    min-height: 100vh;
+    padding-bottom: 80px;
+  }
+  /* Grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,86,210,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,86,210,0.03) 1px, transparent 1px);
+    background-size: 32px 32px;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .main-wrapper { position: relative; z-index: 1; }
+  
+  /* CSS Animations */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(15px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Header */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  
+  .logo-area { display: flex; align-items: center; gap: 15px; }
+  .logo-img { height: 40px; }
+  .logo-text { font-size: 22px; font-weight: 800; border-left: 2px solid var(--border); padding-left: 12px; color: var(--text); }
+  .expert-btn {
+    background: #111827;
+    color: white;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 20px;
+    border-radius: 30px;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.2s, background 0.2s;
+  }
+  .expert-btn:hover { background: #1f2937; transform: translateY(-1px); }
+  
+  .page-header { max-width: 1080px; margin: 64px auto 40px; text-align: center; animation: fadeInUp 0.6s ease-out forwards; }
+  .page-title { font-size: 44px; font-weight: 800; line-height: 1.2; letter-spacing: -0.5px; }
+  .page-title span { color: var(--accent); }
+
+  /* Input Section */
+  .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; animation: fadeInUp 0.8s ease-out forwards; }
+  .drop-zone {
+    border: 2px dashed #D1D5DB;
+    border-radius: 16px;
+    padding: 64px 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    background: var(--surface);
+    margin-bottom: 20px;
+  }
+  .drop-zone.dragover, .drop-zone:hover { border-color: var(--accent); background: #f4f8ff; transform: scale(1.01); }
+  .drop-icon {
+    width: 64px; height: 64px;
+    margin: 0 auto 20px;
+    background: #f0f7ff;
+    border-radius: 16px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent); font-size: 28px; border: 1px solid #e0efff;
+    transition: transform 0.3s;
+  }
+  .drop-zone:hover .drop-icon { transform: translateY(-5px); }
+  .drop-title { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
+  .drop-sub { font-size: 14px; color: var(--text-muted); line-height: 1.6; }
+  .drop-formats { display: flex; gap: 8px; justify-content: center; margin-top: 20px; }
+  .fmt-tag { font-size: 11px; font-weight: 700; padding: 6px 14px; border-radius: 20px; background: #F3F4F6; color: var(--text-muted); transition: background 0.2s; }
+  .drop-zone:hover .fmt-tag { background: #E5E7EB; }
+  
+  #fileInput { display: none; }
+  .file-info { display: none; align-items: center; gap: 12px; padding: 16px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-top: 16px; font-size: 13px; box-shadow: var(--shadow); }
+  .file-info.visible { display: flex; animation: fadeInUp 0.4s ease-out forwards; }
+  .file-icon { font-size: 18px; }
+  .file-name { color: var(--text); font-weight: 700; flex: 1; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+  .file-size { color: var(--text-muted); font-weight: 500; }
+  .remove-file { cursor: pointer; color: var(--text-muted); background: none; border: none; font-size: 16px; padding: 4px; transition: color 0.2s; }
+  .remove-file:hover { color: #EF4444; }
+  
+  /* NEW ACTION PANEL FOR TWO-STEP WORKFLOW */
+  .action-panel { display: flex; gap: 16px; margin-top: 24px; animation: fadeInUp 0.4s ease-out forwards; }
+  
+  .process-btn {
+    flex: 1; padding: 18px; border: none; border-radius: 12px;
+    background: var(--accent); color: white;
+    font-size: 16px; font-weight: 800; cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 6px -1px var(--accent-glow);
+  }
+  .process-btn:hover { background: #004dc0; transform: translateY(-2px); box-shadow: 0 10px 15px -3px var(--accent-glow); }
+  .process-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+  
+  .error-box { display: none; background: #FEF2F2; border: 1px solid #FCA5A5; border-radius: 12px; padding: 16px 20px; margin-top: 20px; font-size: 13px; color: #B91C1C; }
+  .error-box.visible { display: block; animation: fadeInUp 0.4s ease-out forwards; }
+  
+  /* Loading Block */
+  .loading { display: none; align-items: center; gap: 16px; padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; margin-top: 24px; box-shadow: var(--shadow); }
+  .loading.visible { display: flex; animation: fadeInUp 0.4s ease-out forwards; }
+  .spinner { width: 24px; height: 24px; border: 3px solid #E5E7EB; border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  .loading-text { font-size: 14px; color: var(--text-muted); }
+  .loading-text b { color: var(--accent); font-weight: 700; }
+
+  /* Results Section */
+  .results { display: none; margin-top: 48px; border-top: 1px solid var(--border); padding-top: 40px; }
+  .results.visible { display: block; animation: fadeInUp 0.6s ease-out forwards; }
+  .results-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  .results-title { font-size: 24px; font-weight: 800; }
+  .results-title span { color: var(--accent); }
+  .raw-toggle { background: none; border: 1px solid var(--border); color: var(--text-muted); font-size: 12px; font-weight: 700; padding: 8px 16px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+  .raw-toggle:hover { border-color: var(--accent); color: var(--accent); background: #f4f8ff; }
+  
+  .summary-card { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 12px; padding: 24px; margin-bottom: 32px; font-size: 14px; line-height: 1.8; box-shadow: var(--shadow); }
+  .summary-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: var(--accent); margin-bottom: 12px; }
+  
+  .fields-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  
+  .field-card { 
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 24px; 
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); box-shadow: var(--shadow); 
+    opacity: 0; /* Hidden initially for staggered animation */
+  }
+  .field-card:hover { border-color: var(--accent); box-shadow: var(--shadow-hover); transform: translateY(-4px); }
+  
+  .field-label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .field-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .field-value { font-size: 18px; font-weight: 700; line-height: 1.4; color: var(--text); }
+  .field-value.empty { color: var(--text-muted); font-style: italic; font-weight: 500; font-size: 15px; }
+  
+  /* Field Dot Colors */
+  .type-name .field-dot { background: #3B82F6; } .type-date .field-dot { background: #10B981; }
+  .type-amount .field-dot { background: #F59E0B; } .type-contact .field-dot { background: #EF4444; }
+  .type-id .field-dot { background: #8B5CF6; } .type-location .field-dot { background: #06B6D4; }
+  .type-other .field-dot { background: #6B7280; }
+
+  .raw-output { display: none; background: #1F2937; color: #D1D5DB; border-radius: 12px; padding: 20px; margin-top: 20px; font-size: 12px; font-family: monospace; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }
+  .raw-output.visible { display: block; animation: fadeInUp 0.4s ease-out forwards; }
+</style>
+</head>
+<body>
+<div class="main-wrapper">
+  
+  <header>
+    <a href="https://ignosis.ai/" class="logo-area" style="text-decoration: none;" target="_blank">
+      <img src="https://cdn.prod.website-files.com/699e8af88ea3bfa714a8cb10/69e9b3e6bc68cbc8cdb6ce44_Ignosis%20AI%20Logo%20-%20Standard%20-%20no%20padding.png" class="logo-img" alt="Ignosis Logo">
+      <div class="logo-text">Documentation Intelligence AI Engine</div>
+    </a>
+    
+    <a href="https://ignosis.ai/contact-us" class="expert-btn" style="text-decoration: none; display: inline-block;" target="_blank">Talk to an Expert →</a>
+  </header>
+  
+
+  <div class="page-header">
+    <h1 class="page-title">Transform Documents <br> into <span>Structured Intelligence</span></h1>
+  </div>
+
+  <div class="container">
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-icon">📤</div>
+      <div class="drop-title">Drop your document here</div>
+      <div class="drop-sub">Drag & drop a PDF, Image, or Text file export here to begin</div>
+      <div class="drop-formats">
+        <span class="fmt-tag">.PDF</span>
+        <span class="fmt-tag">.PNG / .JPG</span>
+        <span class="fmt-tag">.TXT</span>
+        <span class="fmt-tag">.HTML / .JSON</span>
+      </div>
+      <input type="file" id="fileInput" accept=".pdf,.png,.jpg,.jpeg,.txt,.html,.json">
+    </div>
+
+    <div class="file-info" id="fileInfo">
+      <span class="file-icon">📎</span>
+      <span class="file-name" id="fileName">—</span>
+      <span class="file-size" id="fileSize"></span>
+      <button class="remove-file" id="removeFile">✕</button>
+    </div>
+    
+    <div id="detectedTypeBadge" style="display: none; margin-top: 16px; text-align: center; color: var(--accent); font-weight: 700; font-size: 22px;">
+        Detected Classification: <span id="docTypeLabel"></span>
+    </div>
+
+    <div class="error-box" id="errorBox"></div>
+    
+    <div class="action-panel">
+        <button class="process-btn" id="identifyBtn" disabled style="background: #1F2937;">🔍 Identify Document</button>
+        <button class="process-btn" id="extractBtn" disabled>⚡ Extract Data via Pipeline</button>
+    </div>
+
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <div class="loading-text"><b>Transmission underway...</b></div>
+    </div>
+
+    <div class="results" id="results">
+      <div class="results-header">
+        <div class="results-title">Pipeline Output · <span id="resultsDocType">Document Intelligence</span></div>
+        <button class="raw-toggle" id="rawToggle">Show raw JSON</button>
+      </div>
+      <div class="summary-card" id="summaryBox">
+        <div class="summary-label">Document Summary & Verification Warnings</div>
+        <div id="summaryText">—</div>
+      </div>
+      <div class="fields-grid" id="fieldsGrid"></div>
+      <div class="raw-output" id="rawOutput"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let selectedFile = null;
+let rawJsonVisible = false;
+let identifiedDocType = "";
+
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', e => { e.preventDefault(); dropZone.classList.remove('dragover'); });
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+});
+
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+document.getElementById('removeFile').addEventListener('click', clearFile);
+
+function handleFile(file) {
+  const allowed = ['pdf','png','jpg','jpeg','txt','html','json'];
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!allowed.includes(ext)) {
+    showError('Process Execution Halted: Please upload a PDF, Image, or Text document.');
+    return;
+  }
+  hideError();
+  selectedFile = file; 
+  identifiedDocType = "";
+  
+  document.getElementById('fileName').textContent = file.name;
+  document.getElementById('fileSize').textContent = formatBytes(file.size);
+  document.getElementById('fileInfo').classList.add('visible');
+  
+  // Reset Action Panel States
+  const identifyBtn = document.getElementById('identifyBtn');
+  identifyBtn.disabled = false;
+  identifyBtn.textContent = "🔍 Identify Document";
+  document.getElementById('extractBtn').disabled = true;
+  document.getElementById('detectedTypeBadge').style.display = 'none';
+  document.getElementById('results').classList.remove('visible');
+}
+
+function clearFile() {
+  selectedFile = null;
+  identifiedDocType = "";
+  fileInput.value = '';
+  document.getElementById('fileInfo').classList.remove('visible');
+  document.getElementById('detectedTypeBadge').style.display = 'none';
+  document.getElementById('results').classList.remove('visible');
+  
+  const identifyBtn = document.getElementById('identifyBtn');
+  identifyBtn.disabled = true;
+  identifyBtn.textContent = "🔍 Identify Document";
+  document.getElementById('extractBtn').disabled = true;
+  
+  hideError();
+}
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+// ------------------------------------------------------------------
+// STEP 1: IDENTIFICATION PIPELINE
+// ------------------------------------------------------------------
+document.getElementById('identifyBtn').addEventListener('click', async () => {
+  if (!selectedFile) return;
+  hideError();
+  
+  const identifyBtn = document.getElementById('identifyBtn');
+  identifyBtn.disabled = true;
+  identifyBtn.textContent = "Scanning...";
+  
+  const formData = new FormData();
+  formData.append('document', selectedFile);
+  
+  try {
+      const res = await fetch('/api/classify', { method: 'POST', body: formData });
+      const data = await res.json();
+      
+      if (!res.ok) throw new Error(data.error || 'Classification anomaly experienced.');
+      
+      identifiedDocType = data.document_type;
+      
+      document.getElementById('docTypeLabel').textContent = identifiedDocType;
+      document.getElementById('detectedTypeBadge').style.display = 'block';
+      
+      identifyBtn.textContent = "✓ Identified";
+      document.getElementById('extractBtn').disabled = false; // Unlock Extraction!
+      
+  } catch (err) {
+      showError('Classification Execution Halted: ' + err.message);
+      identifyBtn.disabled = false;
+      identifyBtn.textContent = "🔍 Identify Document";
+  }
+});
+
+// ------------------------------------------------------------------
+// STEP 2: EXTRACTION PIPELINE
+// ------------------------------------------------------------------
+document.getElementById('extractBtn').addEventListener('click', async () => {
+  if (!selectedFile || !identifiedDocType) return;
+  hideError();
+
+  const extractBtn = document.getElementById('extractBtn');
+  const identifyBtn = document.getElementById('identifyBtn');
+  
+  extractBtn.disabled = true;
+  identifyBtn.disabled = true;
+  document.getElementById('loading').classList.add('visible');
+  document.getElementById('results').classList.remove('visible');
+
+  const formData = new FormData();
+  formData.append('document', selectedFile);
+  formData.append('document_type', identifiedDocType); // Transmit specific target context
+
+  try {
+    const res = await fetch('/api/extract', {
+      method: 'POST',
+      body: formData 
+    });
+
+    const rawResponse = await res.text();
+    let data;
+    try { data = JSON.parse(rawResponse); } 
+    catch (parseErr) { throw new Error('Pipeline error: Render server connection timed out.'); }
+
+    if (!res.ok) throw new Error(data.error || 'Pipeline error: Server anomaly experienced.');
+
+    const rawText = data.choices?.[0]?.message?.content || '';
+    renderResults(rawText);
+
+  } catch (err) {
+    showError('Process Execution Halted: ' + err.message);
+  } finally {
+    document.getElementById('loading').classList.remove('visible');
+    extractBtn.disabled = false;
+  }
+});
+
+// ------------------------------------------------------------------
+// DATA RENDERING
+// ------------------------------------------------------------------
+function renderResults(rawText) {
+  let parsed = null;
+  try {
+    let clean = rawText.replace(/```json/gi, '').replace(/```/g, '');
+    const end = clean.lastIndexOf('}');
+    if (end === -1) throw new Error('Structure anomaly: No valid closing bracket found.');
+
+    let start = clean.indexOf('{');
+    let parseError = null;
+    while (start !== -1 && start < end) {
+      try {
+        parsed = JSON.parse(clean.substring(start, end + 1));
+        break; 
+      } catch (e) {
+        parseError = e;
+        start = clean.indexOf('{', start + 1);
+      }
+    }
+    if (!parsed) throw new Error('Structure anomaly: Valid scheme missing.');
+  } catch(e) {
+    showError('Structure anomaly experienced: ' + e.message);
+    return;
+  }
+
+  document.getElementById('summaryText').textContent = parsed.summary || '—';
+  document.getElementById('resultsDocType').textContent = parsed.document_type || 'Unknown Document Type';
+
+  const grid = document.getElementById('fieldsGrid');
+  grid.innerHTML = '';
+  
+  (parsed.fields || []).forEach((f, index) => {
+    const card = document.createElement('div');
+    card.className = `field-card type-${f.type || 'other'}`;
+    card.style.animation = `fadeInUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) ${index * 0.08}s forwards`;
+    
+    const val = f.value !== null && f.value !== undefined && f.value !== '' ? f.value : null;
+    card.innerHTML = `
+      <div class="field-label"><span class="field-dot"></span>${escHtml(f.label || 'Field')}</div>
+      <div class="field-value ${val ? '' : 'empty'}">${val ? escHtml(String(val)) : 'Not discovered'}</div>
+    `;
+    grid.appendChild(card);
+  });
+
+  hideError();
+  document.getElementById('rawOutput').textContent = JSON.stringify(parsed, null, 2);
+  document.getElementById('results').classList.add('visible');
+}
+
+document.getElementById('rawToggle').addEventListener('click', () => {
+  rawJsonVisible = !rawJsonVisible;
+  document.getElementById('rawOutput').classList.toggle('visible', rawJsonVisible);
+  document.getElementById('rawToggle').textContent = rawJsonVisible ? 'Hide raw JSON' : 'Show raw JSON';
+});
+
+function showError(msg) {
+  const el = document.getElementById('errorBox');
+  el.textContent = msg;
+  el.classList.add('visible');
+}
+function hideError() { document.getElementById('errorBox').classList.remove('visible'); }
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+</script>
+</body>
+</html>
