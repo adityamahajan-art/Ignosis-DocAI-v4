@@ -35,7 +35,7 @@ SARVAM_API_KEY = os.environ.get('SARVAM_API_KEY', 'sk_gjwhvmqe_d2vFC2FA245pX2gkP
 SARVAM_CHAT_ENDPOINT = 'https://api.sarvam.ai/v1/chat/completions'
 SARVAM_DOC_ENDPOINT = 'https://api.sarvam.ai/doc-digitization/job/v1'
 
-# Initialize the Rule Engine (Update path if your excel file is inside a 'data/' folder)
+# Initialize the Rule Engine
 rule_engine = RuleEngine("UnsecuredLogin_KSF_Rulebook.xlsx")
 
 # =====================================================================
@@ -47,7 +47,6 @@ DOCUMENT_SCHEMAS = {
     "Rent Agreement": '"landlord_name", "tenant_name", "property_address", "monthly_rent", "lease_start_date", "lease_end_date"',
     "Bank Statement": '"account_name", "account_number", "bank_name", "branch_name", "ifsc_code", "statement_period", "account_address"',
     "Loan Agreement": '"account_holder_name", "bank_name", "account_number", "ifsc_code", "loan_amount", "agreement_date"',
-    "CIBIL Report": '"applicant_name", "cibil_score", "report_date"', 
     "Partnership Deed": '"partnership_name", "partner_names", "principal_place_of_business", "date_of_execution", "profit_sharing_ratio"',
     "Shop & Establishment Certificate": '"establishment_name", "employer_name", "registration_number", "category_of_establishment", "validity_date", "establishment_address"',
     "Tax Audit Report": '"entity_name", "assessment_year", "auditor_name", "ca_membership_number"',
@@ -57,22 +56,18 @@ DOCUMENT_SCHEMAS = {
     "General Document": '"entity_name", "document_date", "primary_amount", "key_reference_number"'
 }
 
+ITERATIVE_DOCS = ["Rent Agreement", "Loan Agreement", "Partnership Deed"]
+
 def generate_system_prompt(doc_type):
     target_fields = DOCUMENT_SCHEMAS.get(doc_type, DOCUMENT_SCHEMAS["General Document"])
     
     coercion_rules = ""
-    if doc_type == "CIBIL Report":
-        coercion_rules = """
-### COERCION RULES FOR CIBIL REPORT:
-- "cibil_score" MUST be the explicit 3-digit numerical credit score (e.g., 773, 750, 820) found near the visual dial. DO NOT extract descriptive words like "Good", "VeryGood", "High", or "Excellent". 
-- "applicant_name" MUST be the actual human name listed under the "Personal Information" or "Personal Details" section. Do not accidentally extract labels like "DOB" or "Gender".
-"""
-    elif doc_type == "Property Tax Receipt":
+    if doc_type == "Property Tax Receipt":
         coercion_rules = """
 ### COERCION RULES FOR PROPERTY TAX RECEIPT:
 - "receipt_number" MUST extract the Receipt No, Transaction ID, Acknowledgement No, or Challan No.
-- "tax_amount" MUST extract the final numerical amount paid/payable (e.g., "Received Amount", "Paid Amount", "Total Amount", "Payable Amt").
-- "financial_year" MUST extract the specific billing period or year (e.g., "2023-2024", "2021-22", "2024-2025").
+- "tax_amount" MUST extract the final numerical amount paid/payable.
+- "financial_year" MUST extract the specific billing period or year.
 - "owner_name" MUST extract the human or entity name next to Owner, Assessee Name, or "Received From". Do not include the label itself.
 """
     elif doc_type == "Shop & Establishment Certificate":
@@ -202,9 +197,6 @@ def process_doc_digitization(file_bytes, original_filename):
                 
     raise Exception("No markdown file found in output.")
 
-# =====================================================================
-# STEP 1: AI-DRIVEN LOCAL FAST CLASSIFICATION
-# =====================================================================
 def classify_document_via_llm(file_bytes, filename):
     ext = filename.split('.')[-1].lower()
     page_1_text = ""
@@ -240,7 +232,6 @@ def classify_document_via_llm(file_bytes, filename):
         logger.info("[CLASSIFIER] Sending Page 1 to Sarvam Chat for AI Classification...")
         allowed_categories = ", ".join(STATUTORY_DOC_TYPES + list(DOCUMENT_SCHEMAS.keys()))
         
-        # 🔥 FIX: Added robust "PASSPORT" rule.
         classification_prompt = f"""You are an expert document classifier. Read the text from page 1 of a document.
         Classify it into EXACTLY ONE of the following categories: 
         {allowed_categories}.
@@ -290,7 +281,6 @@ def classify_document_via_llm(file_bytes, filename):
         identified_category = re.sub(r'<think>.*?(</think>|$)', '', identified_category, flags=re.DOTALL).strip()
         identified_category = identified_category.replace('"', '').replace("'", '').split('\n')[-1].strip()
         
-        # Robust case-insensitive fallback matching
         all_cats = STATUTORY_DOC_TYPES + list(DOCUMENT_SCHEMAS.keys())
         for cat in all_cats:
             if cat.lower() in identified_category.lower():
@@ -299,23 +289,14 @@ def classify_document_via_llm(file_bytes, filename):
             
         return "General Document"
             
-    except requests.exceptions.HTTPError as e:
-        error_details = e.response.text if hasattr(e, 'response') else str(e)
-        logger.error(f"[CLASSIFIER] Sarvam API HTTP Error: {error_details}")
-        return "General Document"
     except Exception as e:
         logger.error(f"[CLASSIFIER] AI Classification Error: {e}")
         return "General Document"
-    
-# =====================================================================
-# STEP 2: TARGETED ROUTER (Slicing)
-# =====================================================================
 
 def process_pdf_smart_router(file_bytes, original_filename, doc_type):
     pdf_stream = io.BytesIO(file_bytes)
     
     if doc_type == "Financial Statement":
-        logger.info("[ROUTER] 📊 Financial Statement Target! Using high-fidelity tabular extraction...")
         try:
             pages_text = []
             with pdfplumber.open(pdf_stream) as pdf:
@@ -325,12 +306,10 @@ def process_pdf_smart_router(file_bytes, original_filename, doc_type):
                     pages_text.append(text if text else "")
             
             total_extracted_chars = sum(len(p.strip()) for p in pages_text)
-           
             if total_extracted_chars > 500:
                 fs_extracted_text = isolate_fs_components(pages_text)
                 return fs_extracted_text if fs_extracted_text else "\n".join(pages_text[:10])
         except Exception as e:
-            logger.error(f"[ROUTER] pdfplumber fallback error: {e}")
             pdf_stream.seek(0)
 
     reader = PdfReader(pdf_stream)
@@ -349,10 +328,21 @@ def process_pdf_smart_router(file_bytes, original_filename, doc_type):
             return "\n".join(pages_text[:5])
         elif doc_type in ["Income Tax Return (ITR)", "GST Return (GSTR)", "Form 16", "Financial Statement", "MOA / AOA"]:
             return "\n".join(pages_text[:12])
+        # 🔥 FIX: Read full text for long iterative documents
+        elif doc_type in ITERATIVE_DOCS:
+            return "\n".join(pages_text)
         return "\n".join(pages_text[:3])
         
-    logger.info("[ROUTER] 📸 Scanned PDF detected. Slicing optimized layout...")
-    slice_limit = 12 if doc_type in ["Financial Statement", "Income Tax Return (ITR)", "GST Return (GSTR)", "Form 16", "MOA / AOA"] else (5 if doc_type == "Aadhaar Card" else 3)
+    # 🔥 FIX: Expanded slicing limits to ensure long agreements are fully digitized
+    if doc_type in ITERATIVE_DOCS:
+        slice_limit = 20
+    elif doc_type in ["Financial Statement", "Income Tax Return (ITR)", "GST Return (GSTR)", "Form 16", "MOA / AOA"]:
+        slice_limit = 12
+    elif doc_type == "Aadhaar Card":
+        slice_limit = 5
+    else:
+        slice_limit = 3
+        
     if num_pages > slice_limit:
         writer = PdfWriter()
         for i in range(slice_limit): writer.add_page(reader.pages[i])
@@ -363,28 +353,136 @@ def process_pdf_smart_router(file_bytes, original_filename, doc_type):
     else:
         target_filename = original_filename
             
-    # If the document is statutory, DO NOT use Sarvam API for digitization/OCR
     if doc_type in STATUTORY_DOC_TYPES:
-        logger.info(f"[ROUTER] 🏛️ Local OCR triggered for Statutory Scanned PDF: {doc_type}")
         try:
             images = convert_from_bytes(file_bytes, dpi=150)
             ocr_texts = []
             for idx, img in enumerate(images):
-                logger.info(f"[ROUTER] Running local Tesseract OCR on page {idx+1}/{len(images)}...")
                 page_txt = pytesseract.image_to_string(img)
                 ocr_texts.append(page_txt if page_txt else "")
             return "\n".join(ocr_texts)
         except Exception as ocr_err:
-            logger.error(f"[ROUTER] Local Tesseract OCR failed on statutory PDF: {ocr_err}")
             return ""
 
     try:
         return process_doc_digitization(file_bytes, target_filename)
     except Exception as e:
         if "Insufficient credits" in str(e):
-            logger.warning("[ROUTER] ⚠️ Sarvam Out of Credits! Returning blanks to prevent crash.")
             return ""
         raise e
+
+# =====================================================================
+# 🔥 NEW ITERATIVE EXTRACTION ENGINE FOR MULTI-PAGE AGREEMENTS
+# =====================================================================
+def iterative_llm_extraction(doc_type, document_text):
+    """
+    Chunks a long document into ~5 page blocks. Asks the LLM to extract fields.
+    If fields are found, they are removed from the next prompt. The loop aborts
+    early as soon as all requirements are fulfilled to save API costs.
+    """
+    target_fields = [k.strip().replace('"', '') for k in DOCUMENT_SCHEMAS[doc_type].split(',')]
+    current_state = {field: None for field in target_fields}
+    
+    # Compress massive whitespaces to save LLM tokens
+    compressed_text = re.sub(r' {4,}', '    ', document_text)
+    
+    # Approx 5 pages of text per chunk (18,000 characters)
+    chunk_size = 18000 
+    chunks = [compressed_text[i:i+chunk_size] for i in range(0, len(compressed_text), chunk_size)]
+    
+    for idx, chunk in enumerate(chunks):
+        # Identify what we still need to find
+        missing_fields = [k for k, v in current_state.items() if not v or str(v).strip().lower() in ['null', 'none', 'n/a', 'not discovered', '']]
+        
+        # If we found everything, stop wasting API credits and break the loop!
+        if not missing_fields:
+            logger.info(f"[ITERATIVE ENGINE] All fields found for {doc_type}. Stopping early at chunk {idx}.")
+            break
+            
+        logger.info(f"[ITERATIVE ENGINE] Processing chunk {idx+1}/{len(chunks)} for {doc_type}. Hunting for: {missing_fields}")
+        
+        missing_schema_str = ", ".join([f'"{f}"' for f in missing_fields])
+        
+        sys_prompt = f"""You are a strict Document Intelligence Engine.
+Assume the evaluation year is 2026. Document Type: {doc_type}.
+
+### PROPERTIES TO ISOLATE:
+Extract ONLY these specific missing properties: {missing_schema_str}.
+
+CRITICAL JSON RULES:
+1. You MUST output STRICTLY valid JSON.
+2. ALL property keys MUST be enclosed in double quotes.
+3. Output exactly this format:
+{{
+  "document_type": "{doc_type}",
+  "summary": "Extraction from part {idx+1}",
+  "fields": [
+    {{
+      "label": "exact_parameter_key_name",
+      "value": "extracted raw value or null",
+      "type": "other"
+    }}
+  ]
+}}
+Return ONLY the raw JSON object."""
+
+        payload = {
+            "model": "sarvam-30b",
+            "max_tokens": 2000,
+            "temperature": 0.1,
+            "messages": [
+                {"role": "system", "content": sys_prompt + "\n\nCRITICAL: Keep your <think> reasoning extremely brief."},
+                {"role": "user", "content": f"Extract the target parameters from this document chunk:\n\n{chunk}"}
+            ]
+        }
+
+        headers = {"Content-Type": "application/json", "api-subscription-key": SARVAM_API_KEY}
+        try:
+            res = requests.post(SARVAM_CHAT_ENDPOINT, json=payload, headers=headers, timeout=60)
+            res.raise_for_status()
+            
+            content_str = res.json()['choices'][0]['message']['content']
+            cleaned_json_str = content_str.replace('```json', '').replace('```JSON', '').replace('```', '').strip()
+            chunk_data = json.loads(cleaned_json_str)
+            
+            # Map discovered values into the running state memory
+            for item in chunk_data.get("fields", []):
+                lbl = item.get("label")
+                val = item.get("value")
+                if lbl in current_state and val and str(val).strip().lower() not in ['null', 'none', 'n/a', 'not discovered', '']:
+                    current_state[lbl] = val
+                    
+        except Exception as e:
+            logger.error(f"[ITERATIVE ENGINE] Error on chunk {idx+1}: {e}")
+            continue 
+
+    # Reconstruct the final Frontend Payload
+    final_fields = []
+    for k in target_fields:
+        ftype = "other"
+        if any(t in k for t in ["name", "landlord", "tenant", "partner", "holder"]): ftype = "name"
+        elif "date" in k: ftype = "date"
+        elif "amount" in k or "rent" in k or "ratio" in k: ftype = "amount"
+        elif "number" in k or "ifsc" in k: ftype = "id"
+        elif "address" in k or "place" in k or "bank" in k: ftype = "location"
+        
+        final_fields.append({
+            "label": k,
+            "value": current_state[k],
+            "type": ftype
+        })
+        
+    missing_left = [k for k, v in current_state.items() if not v]
+    if missing_left:
+        summary = f"Processed {len(chunks)} document chunks. Some fields remain undiscovered: {', '.join(missing_left)}"
+    else:
+        summary = f"Iterative AI extraction complete. All targets successfully found."
+        
+    return {
+        "document_type": doc_type,
+        "summary": summary,
+        "fields": final_fields
+    }
 
 # =====================================================================
 # FLASK ROUTES
@@ -433,7 +531,6 @@ def extract_data():
                     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                     document_text = pytesseract.image_to_string(gray)
                 except Exception as img_err:
-                    logger.error(f"[ROUTER] Local Tesseract OCR failed on statutory image: {img_err}")
                     document_text = ""
             else:
                 try:
@@ -442,14 +539,11 @@ def extract_data():
                     if "Insufficient credits" in str(e):
                         import cv2
                         import numpy as np
-                        logger.warning("[BACKEND] ⚠️ Sarvam Out of Credits! Running preprocessed local OCR...")
                         nparr = np.frombuffer(file_bytes, np.uint8)
                         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                        
                         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
                         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                        
                         custom_config = r'--oem 3 --psm 6'
                         document_text = pytesseract.image_to_string(thresh, config=custom_config)
                     else:
@@ -457,14 +551,9 @@ def extract_data():
         else:
             return jsonify({"error": "Unsupported file format"}), 400
     except Exception as e:
-        logger.error(f"[BACKEND] Digitization error: {e}")
         return jsonify({"error": f"Digitization error: {str(e)}"}), 500
 
-    # =================================================================
-    # SMART ROUTER: Statutory → Local Engine | Non-Statutory → Sarvam
-    # =================================================================
     if doc_type in STATUTORY_DOC_TYPES:
-        logger.info(f"[ROUTER] 🏛️ Statutory Document Detected: {doc_type} → LOCAL EXTRACTION (no API traffic)")
         try:
             local_data = extract_locally(doc_type, document_text)
             mock_response = {
@@ -472,11 +561,20 @@ def extract_data():
             }
             return jsonify(mock_response)
         except Exception as e:
-            logger.error(f"[ROUTER] Local extraction failed, returning default local schema: {e}")
             mock_response = {"choices": [{"message": {"content": json.dumps({"document_type": doc_type, "summary": "Failed", "fields": []})}}]}
             return jsonify(mock_response)
+            
+    # 🔥 TRIGGER ITERATIVE ENGINE FOR TARGET MULTI-PAGE DOCUMENTS
+    if doc_type in ITERATIVE_DOCS:
+        logger.info(f"[BACKEND] 🚀 Triggering Iterative Multi-Page Extraction for {doc_type}...")
+        try:
+            iterative_data = iterative_llm_extraction(doc_type, document_text)
+            mock_response = {"choices": [{"message": {"content": json.dumps(iterative_data)}}]}
+            return jsonify(mock_response)
+        except Exception as e:
+            logger.error(f"[BACKEND] Iterative Engine Failed: {e}")
+            return jsonify({"error": f"Extraction anomaly: {str(e)}"}), 500
 
-    # --- Pipeline B: Non-Statutory → Sarvam LLM Extraction ---
     compressed_text = re.sub(r' {4,}', '    ', document_text)
     truncated_text = compressed_text[:35000]
     
@@ -496,17 +594,19 @@ def extract_data():
     headers = {"Content-Type": "application/json", "api-subscription-key": SARVAM_API_KEY}
 
     try:
-        logger.info(f"[BACKEND] 🚀 Extracting {doc_type} specific fields via Sarvam Chat...")
         session = requests.Session()
         session.trust_env = False
-        
         response = session.post(SARVAM_CHAT_ENDPOINT, json=sarvam_payload, headers=headers, timeout=60)
         response.raise_for_status()
         
-        return jsonify(response.json())
+        resp_json = response.json()
+        content_str = resp_json['choices'][0]['message']['content']
+        cleaned_json_str = content_str.replace('```json', '').replace('```JSON', '').replace('```', '').strip()
+        
+        resp_json['choices'][0]['message']['content'] = cleaned_json_str
+        return jsonify(resp_json)
 
     except Exception as e:
-        logger.error(f"[BACKEND] API transmission anomaly: {str(e)}")
         return jsonify({"error": f"API transmission anomaly: {str(e)}"}), 500
 
 @app.route('/api/extract_financial', methods=['POST'])
@@ -539,9 +639,6 @@ def extract_financial_data():
 
 @app.route('/api/verify_application', methods=['POST'])
 def verify_application_route():
-    """
-    Unified Endpoint: Digitizes document -> Extracts Data (Local or LLM) -> Runs Credit Saison Rulebook Validation.
-    """
     if 'document' not in request.files: return jsonify({"error": "No document"}), 400
     file = request.files['document']
     doc_type = request.form.get('document_type', 'General Document')
@@ -555,7 +652,6 @@ def verify_application_route():
         jarvis_data = {}
 
     try:
-        # 1. DIGITIZE
         if ext in ['txt', 'html', 'json']: document_text = file_bytes.decode('utf-8', errors='ignore')
         elif ext == 'pdf': document_text = process_pdf_smart_router(file_bytes, filename, doc_type)
         elif ext in ['png', 'jpg', 'jpeg']:
@@ -572,14 +668,15 @@ def verify_application_route():
 
         document_text = re.sub(r' {4,}', '    ', document_text)[:35000]
 
-        # 2. EXTRACT
         if doc_type in STATUTORY_DOC_TYPES:
-            logger.info(f"[BACKEND] 🚀 Statutory Doc Detected: Running Local Regex Engine for {doc_type}...")
             extracted_json = extract_locally(doc_type, document_text)
             flat_doc_data = {item['label']: item['value'] for item in extracted_json.get('fields', [])}
             
+        elif doc_type in ITERATIVE_DOCS:
+            extracted_json = iterative_llm_extraction(doc_type, document_text)
+            flat_doc_data = {item['label']: item['value'] for item in extracted_json.get('fields', [])}
+            
         else:
-            logger.info(f"[BACKEND] 🚀 Non-Statutory Doc Detected: Sending to Sarvam LLM...")
             payload = {
                 "model": "sarvam-30b", 
                 "max_tokens": 2000, 
@@ -593,9 +690,7 @@ def verify_application_route():
             res.raise_for_status()
             
             content_str = res.json()['choices'][0]['message']['content']
-            # Bulletproof cleanup that will not break during copy-paste
             cleaned_json_str = content_str.replace('```json', '').replace('```JSON', '').replace('```', '').strip()
-            
             
             try:
                 extracted_json = json.loads(cleaned_json_str)
@@ -604,7 +699,6 @@ def verify_application_route():
                 
             flat_doc_data = {item['label']: item['value'] for item in extracted_json.get('fields', [])}
 
-        # 3. VERIFY
         compliance_report = rule_engine.evaluate(jarvis_data, flat_doc_data)
 
         return jsonify({
@@ -614,7 +708,6 @@ def verify_application_route():
         })
 
     except Exception as e:
-        logger.error(f"[BACKEND] Verification failed: {e}")
         return jsonify({"error": f"Verification failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
