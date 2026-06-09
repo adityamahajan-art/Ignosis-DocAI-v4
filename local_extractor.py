@@ -18,7 +18,6 @@ STATUTORY_SCHEMAS = {
     "GST/Business Certificate": ["enterprise_name", "gstin", "constitution_of_business", "date_of_incorporation_or_registration", "principal_place_of_business"],
     "Udyam Certificate": ["enterprise_name", "udyam_registration_number", "uan_number", "type_of_organisation", "date_of_registration", "enterprise_address"],
     "Incorporation Certificate / COI": ["company_name", "cin_number", "date_of_incorporation", "registered_office_address"],
-    "MOA / AOA": ["company_name", "cin", "state_of_registration", "authorized_share_capital", "registered_office_address"],
     "Pension Order (PPO)": ["pensioner_name", "ppo_number", "pensioner_address", "date_of_issue"],
     "Form 16": ["employee_name", "employer_name", "pan_of_employee", "pan_of_employer", "assessment_year", "total_income_paid"],
     "Income Tax Return (ITR)": ["pan_number", "full_name", "assessment_year", "total_income", "total_tax_payable"],
@@ -31,7 +30,7 @@ STATUTORY_DOC_TYPES = list(STATUTORY_SCHEMAS.keys())
 # FIELD TYPE CLASSIFIER
 # =====================================================================
 def _get_field_type(key):
-    if any(t in key for t in ["name", "employer", "applicant", "pensioner", "company", "enterprise", "establishment"]):
+    if any(t in key for t in ["name", "employer", "applicant", "pensioner", "company", "enterprise", "establishment", "auditor"]):
         return "name"
     if any(t in key for t in ["date", "year", "period", "validity"]):
         return "date"
@@ -98,11 +97,13 @@ def _find_name_after(text, label_pattern):
 def _grab_address_block(text, label_pattern):
     lines = text.split('\n')
     address_lines = []
+    
     for i, line in enumerate(lines):
         if re.search(label_pattern, line, re.IGNORECASE):
             m = re.search(label_pattern + r'\s*[:\-]?\s*(.*)', line, re.IGNORECASE)
             if m and m.group(1).strip():
                 address_lines.append(m.group(1).strip())
+            
             for j in range(i + 1, min(i + 7, len(lines))):
                 next_line = lines[j].strip()
                 if not next_line: continue
@@ -111,6 +112,7 @@ def _grab_address_block(text, label_pattern):
                 if re.search(r'\b\d{4}\s\d{4}\s\d{4}\b', next_line): break
                 address_lines.append(next_line)
             break
+            
     if address_lines:
         full_addr = ", ".join(address_lines)
         full_addr = re.sub(r'\s+', ' ', full_addr)
@@ -198,6 +200,39 @@ def _convert_spelled_date(date_str):
     if dd and mm and yy:
         return f"{dd}/{mm}/{yy}" 
     return date_str.strip()
+
+# 🔥 AGGRESSIVE DATE FORMATTER: Forces DD/MM/YYYY with Slashes
+def _format_date_with_slashes(date_str):
+    if not date_str: return None
+    s = str(date_str).strip()
+    
+    if re.match(r'^\d{2}/\d{2}/\d{4}$', s): 
+        return s
+        
+    if re.match(r'^\d{2}-\d{2}-\d{4}$', s):
+        return s.replace('-', '/')
+        
+    if re.match(r'^(19|20)\d{2}[/\-\.]((19|20)\d{2}|\d{2})$', s): 
+        return s
+
+    digits = re.sub(r'\D', '', s)
+    
+    if len(digits) == 8:
+        if digits.startswith(('19', '20')) and int(digits[4:6]) <= 12 and int(digits[6:8]) <= 31:
+            return f"{digits[6:8]}/{digits[4:6]}/{digits[0:4]}"
+        return f"{digits[0:2]}/{digits[2:4]}/{digits[4:8]}"
+        
+    if len(digits) == 6:
+        return f"{digits[0:2]}/{digits[2:4]}/20{digits[4:6]}"
+
+    m1 = re.search(r'\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})\b', s)
+    if m1:
+        dd, mm, yy = m1.groups()
+        dd = dd.zfill(2); mm = mm.zfill(2)
+        if len(yy) == 2: yy = "20" + yy if int(yy) < 50 else "19" + yy
+        return f"{dd}/{mm}/{yy}"
+
+    return s
 
 def _get_taxpayer_status(pan):
     if pan and len(pan) >= 4:
@@ -419,6 +454,7 @@ def _extract_coi(text):
         "registered_office_address": None
     }
     flat_text = re.sub(r'\s+', ' ', text)
+    
     m_cin = re.search(r'\b([LU]\s*\d{5}\s*[A-Z]{2}\s*\d{4}\s*[A-Z]{3}\s*\d{6})\b', flat_text, re.IGNORECASE)
     if m_cin:
         extracted["cin_number"] = re.sub(r'\s+', '', m_cin.group(1)).upper()
@@ -442,7 +478,7 @@ def _extract_coi(text):
     if extracted["company_name"]:
         extracted["company_name"] = re.sub(r'(?i)\s+is\s+incorporated.*', '', extracted["company_name"]).strip()
 
-    m_addr = re.search(r'Mailing\s+Address\s+as\s+per\s+record.*?office\s*[:\-;,]?\s*(.*?)(?:Disclaimer|Given\s+under|DS\s+MINISTRY|Signature|$)', flat_text, re.IGNORECASE)
+    m_addr = re.search(r'Mailing\s+Address\s+as\s+per\s+record.*?office\s*[:\-;,]?\s*(.*?)(?:\*\s*as\s*issued|Disclaimer|Given\s+under|DS\s+MINISTRY|Signature|$)', flat_text, re.IGNORECASE)
     if m_addr:
         addr = m_addr.group(1).strip()
         addr = re.sub(r'(?i)[\*\+]\s*s?\s*issued\s+by.*', '', addr).strip()
@@ -452,20 +488,11 @@ def _extract_coi(text):
     else:
         addr = _grab_address_block(text, r'(?:Registered\s*Office|Address|situated\s*at)')
         if addr:
-            addr = re.split(r'(?i)(Disclaimer|Given under)', addr)[0].strip()
+            addr = re.split(r'(?i)(Disclaimer|Given under|\*\s*as\s*issued)', addr)[0].strip()
             extracted["registered_office_address"] = addr
+            
     return extracted
 
-def _extract_moa_aoa(text):
-    return {
-        "company_name": _find_name_after(text, r'(?:Company\s*Name|Name\s*of\s*(?:the\s*)?Company)'),
-        "cin": _first_match(text, r'\b([L|U|l|u][A-Za-z0-9]{20})\b'),
-        "state_of_registration": _first_match(text, r'(?:State|Registered\s*(?:in|at))\s*[:\-]?\s*([A-Za-z\s]+)'),
-        "authorized_share_capital": _find_amount_near_label(text, r'(?:Authorized\s*(?:Share\s*)?Capital|Authorised)'),
-        "registered_office_address": _grab_address_block(text, r'(?:Registered\s*Office|Address)'),
-    }
-
-# 🔥 COMPLETELY REWRITTEN PPO EXTRACTOR
 def _extract_ppo(text):
     extracted = {
         "pensioner_name": None,
@@ -475,27 +502,21 @@ def _extract_ppo(text):
     }
     flat_text = re.sub(r'\s+', ' ', text)
 
-    # 1. PPO NUMBER: Force it to contain at least 1 digit to prevent capturing "Print" or "Order"
     m_ppo = re.search(r'(?:P\.?P\.?O\.?|Pension\s*Payment\s*Order)\s*(?:No\.?|Number)?[\s\:\-]*([A-Z0-9/\-]+)', flat_text, re.IGNORECASE)
     if m_ppo:
         val = m_ppo.group(1).strip()
-        # Ensure the extracted value is NOT just a formatted date, but does contain digits
         if not re.match(r'^\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}$', val) and any(c.isdigit() for c in val):
             extracted["ppo_number"] = val
             
-    # Fallback: Look for a massive 10-15 digit standalone ID block (common in central PPOs)
     if not extracted["ppo_number"]:
         m_ppo_fallback = re.search(r'\b(\d{10,15})\b', text)
         if m_ppo_fallback:
             extracted["ppo_number"] = m_ppo_fallback.group(1)
 
-    # 2. PENSIONER NAME: Anchor and cut off at standard next-field headers
     m_name = re.search(r'(?:Name\s*of\s*(?:the\s*)?(?:Pensioner|Govt\.?\s*servant|recipient\s*of\s*family\s*pension)|Pensioner\s*Name|Name)[\s\:\-]*([A-Za-z\.\s]{4,60})', flat_text, re.IGNORECASE)
     if m_name:
         name_val = m_name.group(1).strip()
-        # Cut off immediately if we hit a standard table header
         name_val = re.split(r'(?i)(Gender|Date|DOB|Relationship|Post|Office)', name_val)[0].strip()
-        # Clear out any trailing digits that snuck in
         name_val = re.sub(r'\s+\d.*$', '', name_val).strip()
         extracted["pensioner_name"] = name_val
     else:
@@ -503,11 +524,9 @@ def _extract_ppo(text):
         if name_val:
             extracted["pensioner_name"] = re.split(r'(?i)(Gender|Date|DOB|Relationship|Post|Office)', name_val)[0].strip()
 
-    # 3. ADDRESS: Multi-anchor trap with list artifact cleaner
     m_addr = re.search(r'(?:Residential|Permanent|Present)\s*Address\s*[\:\-]?\s*(.*?)(?:Personal\s*marks|Date\s*of|Signature|Photograph|Branch\s*Name|IFSC|Mobile|Phone|Rule|Amount|Section\s*2)', flat_text, re.IGNORECASE)
     if m_addr:
         addr_val = m_addr.group(1).strip()
-        # Strip trailing list numbers (e.g. "5. ")
         addr_val = re.sub(r'^\d[\.\)]\s*', '', addr_val).strip()
         addr_val = re.sub(r'\s*\d[\.\)]\s*$', '', addr_val).strip()
         extracted["pensioner_address"] = addr_val
@@ -515,10 +534,8 @@ def _extract_ppo(text):
         addr = _grab_address_block(text, r'(?:Address|Residential\s*Address|Permanent\s*Address)')
         if addr:
             addr = re.split(r'(?i)(Date|Class|Personal|Signature|Branch|IFSC|Section)', addr)[0].strip()
-            # Strip trailing list numbers
             extracted["pensioner_address"] = re.sub(r'\s*\d[\.\)]\s*$', '', addr).strip()
 
-    # 4. DATE OF ISSUE
     m_date = re.search(r'(?:Print\s*Date|Date\s*of\s*Issue|Issue\s*Date)[\s\:\-]*' + _DATE_PATTERN, flat_text, re.IGNORECASE)
     if m_date:
         extracted["date_of_issue"] = m_date.group(1).strip()
@@ -601,10 +618,6 @@ def _extract_gstr(text):
         "total_tax_paid": _find_amount_near_label(text, r'(?:Total\s*Tax\s*(?:Paid|Payable|Liability)|Total\s*Tax)'),
     }
 
-
-# =====================================================================
-# MASTER DISPATCHER
-# =====================================================================
 _EXTRACTORS = {
     "PAN Card": _extract_pan_card,
     "Aadhaar Card": _extract_aadhaar_card,
@@ -615,13 +628,11 @@ _EXTRACTORS = {
     "GST/Business Certificate": _extract_gst_certificate,
     "Udyam Certificate": _extract_udyam_certificate,
     "Incorporation Certificate / COI": _extract_coi,
-    "MOA / AOA": _extract_moa_aoa,
     "Pension Order (PPO)": _extract_ppo,
     "Form 16": _extract_form16,
     "Income Tax Return (ITR)": _extract_itr,
     "GST Return (GSTR)": _extract_gstr,
 }
-
 
 def extract_locally(doc_type: str, text: str) -> dict:
     schema_keys = STATUTORY_SCHEMAS.get(doc_type, [])
@@ -639,7 +650,10 @@ def extract_locally(doc_type: str, text: str) -> dict:
     for key in schema_keys:
         val = raw_data.get(key)
         if val is not None and str(val).strip():
+            if _get_field_type(key) == "date":
+                val = _format_date_with_slashes(val)
             found_count += 1
+            
         fields.append({
             "label": key,
             "value": val if (val is not None and str(val).strip()) else None,
